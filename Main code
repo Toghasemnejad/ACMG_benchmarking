@@ -3,14 +3,8 @@
 """
 Updated Variant Classification Tools Benchmarking Script
 
-This script fixes the ranking issues and correctly benchmarks variant
-classification tools against manual annotations.
-
-Main improvements:
-1. Better handling of Franklin's all-pathogenic classification scheme
-2. Improved tool-specific ranking strategies using native ordering
-3. Enhanced classification scoring system
-4. More detailed debugging output
+This script benchmarks variant classification tools against manual annotations,
+with improvements in ranking, statistical tests, and visualizations.
 """
 
 import pandas as pd
@@ -30,29 +24,13 @@ from lifelines import KaplanMeierFitter, CoxPHFitter
 from lifelines.statistics import logrank_test
 import statsmodels.api as sm
 from sklearn.utils import resample
-# After your existing imports add:
 from scipy.stats import friedmanchisquare, fisher_exact
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 import scikit_posthocs as sp
-from sklearn.utils import resample
 import matplotlib.patches as patches
+from statsmodels.stats.multitest import multipletests
+
 # Set larger font sizes for all text elements
-plt.rcParams.update({
-    'font.size': 16,              # Base font size
-    'axes.labelsize': 18,         # Axis labels
-    'axes.titlesize': 20,         # Axis title
-    'xtick.labelsize': 16,        # X-tick labels
-    'ytick.labelsize': 16,        # Y-tick labels
-    'legend.fontsize': 16,        # Legend text
-})
-# Suppress warnings
-warnings.filterwarnings('ignore')
-
-# Set publication-quality plotting style with much larger fonts
-plt.style.use('ggplot')
-sns.set(style="whitegrid", font_scale=2.0)  # Double the font size
-
-# Make all text elements much larger
 plt.rcParams.update({
     'font.size': 24,              # Base font size
     'font.family': 'serif',
@@ -64,9 +42,10 @@ plt.rcParams.update({
     'legend.fontsize': 24,        # Legend text
     'figure.titlesize': 32        # Figure title
 })
-
-# Make sure seaborn also uses larger fonts
 sns.set_context("poster")  # Use the largest preset context
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
 
 class VariantToolBenchmarker:
     """Class to benchmark variant classification tools."""
@@ -98,6 +77,8 @@ class VariantToolBenchmarker:
         self.results = {}
         self.tool_data = {}
         self.metrics = {}
+        self.statistical_tests = {}  # To store statistical test results
+
     def load_data(self):
         """Load and preprocess all data sources."""
         print("Loading and preprocessing data...")
@@ -127,7 +108,6 @@ class VariantToolBenchmarker:
         self.lirical_data = self._load_lirical_data()
         if self.lirical_data is not None:
             print(f"Loaded LIRICAL data: {self.lirical_data.shape[0]} rows")
-            
             # Filter by sample subset if provided
             if self.sample_subset:
                 self.lirical_data = self.lirical_data[self.lirical_data['sample_id'].isin(self.sample_subset)]
@@ -230,14 +210,6 @@ class VariantToolBenchmarker:
         except Exception as e:
             print(f"Error loading LIRICAL data: {e}")
             return None
-            
-            # Combine all LIRICAL data
-            try:
-                combined_lirical = pd.concat(all_lirical_data, ignore_index=True)
-                return combined_lirical
-            except Exception as e:
-                print(f"Error combining LIRICAL data: {e}")
-                return None
 
     def _prepare_tool_data(self):
         """
@@ -425,89 +397,7 @@ class VariantToolBenchmarker:
                     
                     # Calculate and display summary metrics
                     self._calculate_tool_summary(tool, sample_gene_rankings, ground_truth)
-    def set_publication_style(self, ax, title, xlabel, ylabel):
-        """Apply consistent publication-quality styling to an axis"""
-        ax.set_title(title, fontsize=18, fontweight='bold', pad=20)
-        ax.set_xlabel(xlabel, fontsize=16, labelpad=10)
-        ax.set_ylabel(ylabel, fontsize=16, labelpad=10)
-        ax.tick_params(axis='both', which='major', labelsize=14)
-        ax.tick_params(axis='x', labelrotation=45)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.grid(axis='y', linestyle='--', alpha=0.7)
-        return ax
-    def _fallback_ranking(self, group, tool):
-        """
-        Fallback method for tools without native ranking columns.
-        Provides more sophisticated variant ranking that respects tool characteristics.
-        
-        Parameters:
-        -----------
-        group : DataFrame
-            The group of variants for a specific sample and tool
-        tool : str
-            The name of the tool
-            
-        Returns:
-        --------
-        DataFrame
-            Sorted DataFrame with variants ordered by importance
-        """
-        print(f"  Using fallback ranking for {tool}")
-        
-        # Define pathogenicity ranking system - most pathogenic gets highest score
-        pathogenicity_order = {
-            "pathogenic": 5,
-            "likely_pathogenic": 4,
-            "uncertain_significance": 3,
-            "vus": 3,
-            "likely_benign": 2,
-            "benign": 1
-        }
-        
-        # Function to score pathogenicity
-        def get_pathogenicity_score(classification):
-            if pd.isna(classification):
-                return 0
-                
-            classification = str(classification).lower()
-            # Find the highest pathogenicity score in the classification string
-            max_score = 0
-            for term, score in pathogenicity_order.items():
-                if term in classification:
-                    max_score = max(max_score, score)
-            return max_score
-        
-        # Add pathogenicity score
-        group['path_score'] = group['classification'].apply(get_pathogenicity_score)
-        
-        # For Franklin, add additional ranking criteria if most variants are pathogenic
-        if tool == 'franklin':
-            # Check if most variants are pathogenic
-            path_count = sum(group['path_score'] == 5)
-            total_count = len(group)
-            
-            if path_count / total_count > 0.7:  # If more than 70% are pathogenic
-                # Try to use additional criteria for ranking
-                # Check if there are columns that might help
-                potential_columns = [col for col in group.columns if any(x in col.lower() for x in 
-                    ['impact', 'effect', 'consequence', 'cadd', 'freq', 'maf', 'vaf'])]
-                
-                if potential_columns:
-                    # Use the first potentially useful column as secondary criterion
-                    secondary_col = potential_columns[0]
-                    print(f"  Using {secondary_col} as secondary criterion for Franklin ranking")
-                    
-                    # Determine if higher or lower values are better for this column
-                    # For most impact scores, higher is better; for frequencies, lower is better
-                    ascending = True if any(x in secondary_col.lower() for x in ['freq', 'maf']) else False
-                    
-                    return group.sort_values(by=['path_score', secondary_col, 'hgnc_gene'], 
-                                           ascending=[False, ascending, True])
-        
-        # Default sorting by pathogenicity score then gene name
-        return group.sort_values(by=['path_score', 'hgnc_gene'], ascending=[False, True])
-    
+
     def _calculate_tool_summary(self, tool, sample_gene_rankings, ground_truth):
         """Calculate and display summary metrics for a tool."""
         found_count = 0
@@ -539,7 +429,6 @@ class VariantToolBenchmarker:
         """Calculate all performance metrics for each tool."""
         print("Calculating performance metrics...")
         
-        # Create a dictionary to hold metrics for each tool
         for tool, rankings in self.tool_data.items():
             print(f"Processing tool: {tool}")
             
@@ -562,79 +451,60 @@ class VariantToolBenchmarker:
             self.metrics[tool] = tool_metrics
         
         print("Performance metrics calculation complete.")
-    
+
     def _calculate_ranking_metrics(self, rankings):
         """
         Calculate ranking metrics:
         - Top-rank percentage
         - Top-N percentage (N=5,10,20,30,40,50)
-        - Mean and median rank
-        - Min/max rank
+        - Mean and median rank (only for found cases)
+        - Min/max rank (only for found cases)
         """
         metrics = {}
         
-        # Get ground truth genes for each sample
-        ground_truth = {}
-        for _, row in self.manual_data.iterrows():
-            sample_id = row['Sample id']
-            gene = row['hgnc_gene']
-            ground_truth[sample_id] = gene
+        ground_truth = {row['Sample id']: row['hgnc_gene'] for _, row in self.manual_data.iterrows()}
         
-        # Initialize counters
-        ranks = []
+        found_ranks = []  # Only collect ranks where the gene is found
         top_1_count = 0
         top_n_counts = {5: 0, 10: 0, 20: 0, 30: 0, 40: 0, 50: 0}
         total_samples = 0
         
-        # Calculate ranking metrics
         for sample_id, true_gene in ground_truth.items():
             if sample_id in rankings:
                 total_samples += 1
                 ranked_genes = rankings[sample_id]
                 
                 if true_gene in ranked_genes:
-                    # Get rank of true gene (0-indexed, so add 1)
                     rank = ranked_genes.index(true_gene) + 1
-                    ranks.append(rank)
-                    
-                    # Check if it's the top-ranked gene
+                    found_ranks.append(rank)  # Collect rank only if found
                     if rank == 1:
                         top_1_count += 1
-                    
-                    # Check for top-N metrics
                     for n in top_n_counts.keys():
                         if rank <= n:
                             top_n_counts[n] += 1
-                else:
-                    # Gene not found in rankings, assign a large rank
-                    ranks.append(len(ranked_genes) + 1)
         
-        # Calculate metrics
         if total_samples > 0:
             metrics['top_rank_percentage'] = (top_1_count / total_samples) * 100
-            
             for n, count in top_n_counts.items():
                 metrics[f'top_{n}_percentage'] = (count / total_samples) * 100
-            
-            if ranks:
-                metrics['mean_rank'] = np.mean(ranks)
-                metrics['median_rank'] = np.median(ranks)
-                metrics['min_rank'] = np.min(ranks)
-                metrics['max_rank'] = np.max(ranks)
-            else:
-                # No ranks were calculated
-                for metric in ['mean_rank', 'median_rank', 'min_rank', 'max_rank']:
-                    metrics[metric] = np.nan
         else:
-            # No samples were processed
             metrics['top_rank_percentage'] = np.nan
             for n in top_n_counts.keys():
                 metrics[f'top_{n}_percentage'] = np.nan
-            for metric in ['mean_rank', 'median_rank', 'min_rank', 'max_rank']:
-                metrics[metric] = np.nan
+        
+        if found_ranks:
+            metrics['mean_rank'] = np.mean(found_ranks)
+            metrics['median_rank'] = np.median(found_ranks)
+            metrics['min_rank'] = np.min(found_ranks)
+            metrics['max_rank'] = np.max(found_ranks)
+        else:
+            metrics['mean_rank'] = np.nan
+            metrics['median_rank'] = np.nan
+            metrics['min_rank'] = np.nan
+            metrics['max_rank'] = np.nan
         
         return metrics
-    
+
     def _calculate_filtering_metrics(self, rankings):
         """
         Calculate filtering metrics:
@@ -643,30 +513,21 @@ class VariantToolBenchmarker:
         """
         metrics = {}
         
-        # Get ground truth genes for each sample
-        ground_truth = {}
-        for _, row in self.manual_data.iterrows():
-            sample_id = row['Sample id']
-            gene = row['hgnc_gene']
-            ground_truth[sample_id] = gene
+        ground_truth = {row['Sample id']: row['hgnc_gene'] for _, row in self.manual_data.iterrows()}
         
-        # Initialize counters
         filtered_out_count = 0
         retained_count = 0
         total_samples = 0
         
-        # Calculate filtering metrics
         for sample_id, true_gene in ground_truth.items():
             if sample_id in rankings:
                 total_samples += 1
                 ranked_genes = rankings[sample_id]
-                
                 if true_gene in ranked_genes:
                     retained_count += 1
                 else:
                     filtered_out_count += 1
         
-        # Calculate metrics
         if total_samples > 0:
             metrics['filtered_out_rate'] = (filtered_out_count / total_samples) * 100
             metrics['retention_rate'] = (retained_count / total_samples) * 100
@@ -675,7 +536,7 @@ class VariantToolBenchmarker:
             metrics['retention_rate'] = np.nan
         
         return metrics
-    
+
     def _calculate_accuracy_metrics(self, rankings):
         """
         Calculate accuracy metrics:
@@ -686,110 +547,80 @@ class VariantToolBenchmarker:
         """
         metrics = {}
         
-        # Get ground truth genes for each sample
-        ground_truth = {}
-        for _, row in self.manual_data.iterrows():
-            sample_id = row['Sample id']
-            gene = row['hgnc_gene']
-            ground_truth[sample_id] = gene
+        ground_truth = {row['Sample id']: row['hgnc_gene'] for _, row in self.manual_data.iterrows()}
         
-        # Calculate precision at different rank thresholds
         rank_thresholds = [1, 5, 10, 20, 50]
         
+        # Calculate precision at different thresholds using global precision
         for threshold in rank_thresholds:
             true_positives = 0
-            false_positives = 0
+            total_predictions = 0
             
             for sample_id, true_gene in ground_truth.items():
                 if sample_id in rankings:
                     ranked_genes = rankings[sample_id]
-                    top_n_genes = ranked_genes[:threshold] if len(ranked_genes) >= threshold else ranked_genes
+                    # Take top k genes (or all if less than k)
+                    top_k_genes = ranked_genes[:min(threshold, len(ranked_genes))]
                     
-                    if true_gene in top_n_genes:
+                    total_predictions += len(top_k_genes)
+                    if true_gene in top_k_genes:
                         true_positives += 1
-                    else:
-                        false_positives += threshold - (1 if true_gene in ranked_genes else 0)
             
-            # Calculate precision
-            if true_positives + false_positives > 0:
-                precision = true_positives / (true_positives + false_positives)
+            if total_predictions > 0:
+                precision = true_positives / total_predictions
             else:
-                precision = np.nan
-            
+                precision = 0.0
+                
             metrics[f'precision_at_{threshold}'] = precision
         
-        # Calculate recall (sensitivity)
         true_positives = 0
         false_negatives = 0
-        
         for sample_id, true_gene in ground_truth.items():
             if sample_id in rankings:
                 ranked_genes = rankings[sample_id]
-                
                 if true_gene in ranked_genes:
                     true_positives += 1
                 else:
                     false_negatives += 1
-        
-        # Calculate recall
         if true_positives + false_negatives > 0:
             recall = true_positives / (true_positives + false_negatives)
         else:
             recall = np.nan
-        
         metrics['recall'] = recall
-        
-        # Calculate specificity (true negative rate)
-        # This requires knowing the total gene pool, which might not be directly available
-        # As an approximation, we'll use the total number of ranked genes that aren't the true gene
         
         true_negatives = 0
         false_positives = 0
-        
         for sample_id, true_gene in ground_truth.items():
             if sample_id in rankings:
                 ranked_genes = rankings[sample_id]
-                
-                # Count genes that aren't the true gene and aren't ranked
                 true_negatives += len(set(self.acmg_filtered['hgnc_gene'].unique()) - set(ranked_genes))
-                
-                # Count ranked genes that aren't the true gene
                 false_positives += len(ranked_genes) - (1 if true_gene in ranked_genes else 0)
-        
-        # Calculate specificity
         if true_negatives + false_positives > 0:
             specificity = true_negatives / (true_negatives + false_positives)
         else:
             specificity = np.nan
-        
         metrics['specificity'] = specificity
         
-        # Calculate F1 score
         if recall + metrics['precision_at_1'] > 0:
             f1 = 2 * (metrics['precision_at_1'] * recall) / (metrics['precision_at_1'] + recall)
         else:
             f1 = np.nan
-        
         metrics['f1_score'] = f1
         
         return metrics
 
-    # =========== ADD THIS METHOD TO THE VariantToolBenchmarker CLASS ===========
     def perform_and_visualize_statistical_tests(self, output_dir='viz'):
         """
-        Perform statistical tests and generate visualizations for the results.
-        
-        Parameters:
-        -----------
-        output_dir : str
-            Directory to save visualizations
+        Perform statistical tests and generate visualizations with fixes:
+        - Bonferroni correction for Fisher's exact tests
+        - Sample size checks
+        - Bootstrap CIs for top-1, top-5, top-10
+        - Fisher’s exact test visualization
+        - Better missing data handling
         """
         print("Performing statistical tests...")
         
-        # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
-        
-        # Create a dictionary to store test results
         self.statistical_tests = {
             'bootstrap_ci': {},
             'friedman_test': {},
@@ -797,383 +628,242 @@ class VariantToolBenchmarker:
             'fisher_exact': {}
         }
         
-        # Get list of tools
         tools = list(self.tool_data.keys())
+        ground_truth = {row['Sample id']: row['hgnc_gene'] for _, row in self.manual_data.iterrows()}
+        sample_ids = sorted(list(set(ground_truth.keys()) & set().union(*[set(self.tool_data[t].keys()) for t in tools])))
+        n_samples = len(sample_ids)
+        print(f"Samples for statistical tests: {n_samples}")
         
-        # Get ground truth genes for each sample
-        ground_truth = {}
-        for _, row in self.manual_data.iterrows():
-            sample_id = row['Sample id']
-            gene = row['hgnc_gene']
-            ground_truth[sample_id] = gene
+        if n_samples < 10:
+            print("Warning: Small sample size (<10) may affect test reliability")
         
-        # ================ BOOTSTRAP CONFIDENCE INTERVALS ================
-        print("Calculating bootstrap confidence intervals...")
+        # Bootstrap Confidence Intervals
+        print("Calculating bootstrap CIs for Top-1, Top-5, Top-10...")
         n_resamples = 1000
-        confidence = 0.95
-        
-        # Metrics to calculate CIs for
-        key_metrics = ['top_rank_percentage', 'top_5_percentage', 'top_10_percentage']
+        metrics_list = ['top_rank_percentage', 'top_5_percentage', 'top_10_percentage']
+        labels = ['Top-1 Accuracy', 'Top-5 Accuracy', 'Top-10 Accuracy']
         
         for tool in tools:
             self.statistical_tests['bootstrap_ci'][tool] = {}
-            
-            # For each metric, calculate bootstrap CIs
-            for metric in key_metrics:
-                # Get the original samples and their status
+            for metric, label in zip(metrics_list, labels):
                 samples = []
+                threshold = 1 if metric == 'top_rank_percentage' else int(metric.split('_')[1])
                 for sample_id, true_gene in ground_truth.items():
                     if sample_id in self.tool_data[tool]:
                         ranked_genes = self.tool_data[tool][sample_id]
-                        
-                        # For top-1 rank
-                        if metric == 'top_rank_percentage':
-                            samples.append(1 if true_gene in ranked_genes and ranked_genes.index(true_gene) == 0 else 0)
-                        # For top-5 rank
-                        elif metric == 'top_5_percentage':
-                            samples.append(1 if true_gene in ranked_genes and ranked_genes.index(true_gene) < 5 else 0)
-                        # For top-10 rank
-                        elif metric == 'top_10_percentage':
-                            samples.append(1 if true_gene in ranked_genes and ranked_genes.index(true_gene) < 10 else 0)
+                        found = true_gene in ranked_genes and ranked_genes.index(true_gene) < threshold
+                        samples.append(1 if found else 0)
                 
-                # Perform bootstrap resampling
-                bootstrap_results = []
-                for _ in range(n_resamples):
-                    # Resample with replacement
-                    resampled = resample(samples)
-                    # Calculate the percentage
-                    bootstrap_results.append(np.mean(resampled) * 100)
+                if len(samples) < 5:
+                    print(f"Warning: Too few samples ({len(samples)}) for {tool} {label} CI")
+                    self.statistical_tests['bootstrap_ci'][tool][metric] = {'lower': np.nan, 'upper': np.nan, 'mean': np.nan}
+                    continue
                 
-                # Calculate confidence intervals
-                alpha = (1 - confidence) / 2
-                lower_bound = np.percentile(bootstrap_results, alpha * 100)
-                upper_bound = np.percentile(bootstrap_results, (1 - alpha) * 100)
-                
-                # Store results
+                bootstrap_results = [np.mean(resample(samples)) * 100 for _ in range(n_resamples)]
+                lower, upper = np.percentile(bootstrap_results, [2.5, 97.5])
                 self.statistical_tests['bootstrap_ci'][tool][metric] = {
-                    'lower': lower_bound,
-                    'upper': upper_bound,
+                    'lower': lower,
+                    'upper': upper,
                     'mean': np.mean(bootstrap_results)
                 }
         
-        # ================ FRIEDMAN & NEMENYI TESTS ================
-        print("Performing Friedman test and Nemenyi post-hoc test...")
+        plt.figure(figsize=(15, 5))
+        for i, (metric, label) in enumerate(zip(metrics_list, labels)):
+            plt.subplot(1, 3, i+1)
+            means, lowers, uppers, tool_names = [], [], [], []
+            for tool in tools:
+                if metric in self.statistical_tests['bootstrap_ci'][tool]:
+                    ci_data = self.statistical_tests['bootstrap_ci'][tool][metric]
+                    if not np.isnan(ci_data['mean']):
+                        tool_names.append(tool)
+                        means.append(ci_data['mean'])
+                        lowers.append(ci_data['lower'])
+                        uppers.append(ci_data['upper'])
+            
+            yerr = [np.array(means) - np.array(lowers), np.array(uppers) - np.array(means)]
+            plt.errorbar(range(len(tool_names)), means, yerr=yerr, fmt='o', capsize=5)
+            plt.title(f"{label} (95% CI)")
+            plt.ylabel("Percentage (%)")
+            plt.xticks(range(len(tool_names)), tool_names, rotation=45)
+            plt.grid(True, linestyle='--', alpha=0.7)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'bootstrap_ci.png'), dpi=1200, bbox_inches='tight')
+        plt.close()
         
-        # Create a matrix of ranks for each sample and tool
-        sample_ids = sorted(list(set(ground_truth.keys()) & set().union(*[set(self.tool_data[t].keys()) for t in tools])))
-        
-        if len(sample_ids) >= 3 and len(tools) >= 2:
-            # Create rank matrix
+        # Friedman & Nemenyi Tests
+        print("Performing Friedman and Nemenyi tests...")
+        if n_samples >= 5 and len(tools) >= 2:
             rank_matrix = []
             for sample_id in sample_ids:
                 sample_ranks = []
                 for tool in tools:
                     if sample_id in self.tool_data[tool]:
                         ranked_genes = self.tool_data[tool][sample_id]
-                        if ground_truth[sample_id] in ranked_genes:
-                            # Get 1-based rank of true gene
-                            rank = ranked_genes.index(ground_truth[sample_id]) + 1
-                        else:
-                            # If gene not found, assign a large rank
-                            rank = len(ranked_genes) + 1
-                        sample_ranks.append(rank)
+                        rank = ranked_genes.index(ground_truth[sample_id]) + 1 if ground_truth[sample_id] in ranked_genes else len(ranked_genes) + 1
                     else:
-                        # If sample not processed by tool, assign a large rank
-                        sample_ranks.append(float('inf'))
-                
-                # Only add the sample if all tools have a finite rank
-                if all(rank != float('inf') for rank in sample_ranks):
-                    rank_matrix.append(sample_ranks)
+                        # Impute average rank for missing data
+                        avg_rank = np.mean([len(self.tool_data[tool].get(sid, [])) + 1 
+                                          for sid in self.tool_data[tool].keys() 
+                                          if ground_truth.get(sid) not in self.tool_data[tool].get(sid, [])])
+                        rank = avg_rank if not np.isnan(avg_rank) else 1000
+                    sample_ranks.append(rank)
+                rank_matrix.append(sample_ranks)
             
-            # Convert to numpy array
             rank_matrix = np.array(rank_matrix)
+            try:
+                statistic, p_value = friedmanchisquare(*rank_matrix.T)
+                self.statistical_tests['friedman_test'] = {
+                    'statistic': statistic,
+                    'p_value': p_value,
+                    'significant': p_value < 0.05
+                }
+                print(f"Friedman test: statistic={statistic:.2f}, p-value={p_value:.4f}")
+                
+                if p_value < 0.05:
+                    nemenyi_result = sp.posthoc_nemenyi_friedman(rank_matrix)
+                    self.statistical_tests['nemenyi_test'] = {'matrix': nemenyi_result, 'tool_pairs': {}}
+                    for i, tool1 in enumerate(tools):
+                        for j, tool2 in enumerate(tools):
+                            if i < j:
+                                p_val = nemenyi_result.iloc[i, j]
+                                self.statistical_tests['nemenyi_test']['tool_pairs'][(tool1, tool2)] = {
+                                    'p_value': p_val,
+                                    'significant': p_val < 0.05
+                                }
+                                if p_val < 0.05:
+                                    print(f"Significant difference: {tool1} vs {tool2}, p={p_val:.4f}")
             
-            # Check if we have enough samples with all tools
-            if len(rank_matrix) >= 3:
-                try:
-                    # Perform Friedman test
-                    statistic, p_value = friedmanchisquare(*[rank_matrix[:, i] for i in range(rank_matrix.shape[1])])
+                    plt.figure(figsize=(10, 8))
+                    p_matrix = np.ones((len(tools), len(tools)))
+                    for (tool1, tool2), data in self.statistical_tests['nemenyi_test']['tool_pairs'].items():
+                        i, j = tools.index(tool1), tools.index(tool2)
+                        p_matrix[i, j] = p_matrix[j, i] = data['p_value']
                     
-                    # Store Friedman test results
-                    self.statistical_tests['friedman_test'] = {
-                        'statistic': statistic,
-                        'p_value': p_value,
-                        'significant': p_value < 0.05
-                    }
-                    
-                    print(f"Friedman test: statistic={statistic:.4f}, p-value={p_value:.4f}")
-                    
-                    # If Friedman test is significant, perform Nemenyi post-hoc test
-                    if p_value < 0.05:
-                        # Perform Nemenyi test using posthoc_nemenyi from scikit_posthocs
-                        nemenyi_result = sp.posthoc_nemenyi_friedman(rank_matrix)
-                        
-                        # Store Nemenyi test results
-                        self.statistical_tests['nemenyi_test'] = {
-                            'matrix': nemenyi_result,
-                            'tool_pairs': {}
-                        }
-                        
-                        # Extract significant pairwise comparisons
-                        for i, tool1 in enumerate(tools):
-                            for j, tool2 in enumerate(tools):
-                                if i < j:  # Only compare each pair once
-                                    p_val = nemenyi_result.iloc[i, j]
-                                    self.statistical_tests['nemenyi_test']['tool_pairs'][(tool1, tool2)] = {
-                                        'p_value': p_val,
-                                        'significant': p_val < 0.05
-                                    }
-                                    if p_val < 0.05:
-                                        print(f"Significant difference between {tool1} and {tool2}: p-value={p_val:.4f}")
-                except Exception as e:
-                    print(f"Error performing Friedman test: {e}")
+                    mask = np.triu(np.ones_like(p_matrix, dtype=bool))
+                    sns.heatmap(p_matrix, mask=mask, cmap='YlOrRd_r', vmin=0, vmax=0.1,
+                               annot=True, fmt='.3f', cbar_kws={'label': 'p-value'})
+                    plt.title("Nemenyi Test: Pairwise p-values")
+                    plt.xticks(np.arange(len(tools)) + 0.5, tools, rotation=45)
+                    plt.yticks(np.arange(len(tools)) + 0.5, tools)
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(output_dir, 'nemenyi_test.png'), dpi=1200)
+                    plt.close()
+            except Exception as e:
+                print(f"Friedman test error: {e}")
         else:
-            print("Not enough samples or tools for Friedman test")
+            print("Need >=5 samples and >=2 tools for Friedman test")
         
-        # ================ FISHER'S EXACT TEST ================
-        print("Performing Fisher's exact test...")
-        
-        # Store Fisher's exact test results
-        self.statistical_tests['fisher_exact'] = {
-            'top_1': {},
-            'top_5': {},
-            'top_10': {}
-        }
-        
-        # Thresholds to test
+        # Fisher’s Exact Test
+        print("Performing Fisher’s exact test with Bonferroni correction...")
+        self.statistical_tests['fisher_exact'] = {'top_1': {}, 'top_5': {}, 'top_10': {}}
         thresholds = [1, 5, 10]
-        threshold_keys = ['top_1', 'top_5', 'top_10']
+        keys = ['top_1', 'top_5', 'top_10']
+        all_p_values = []
+        all_pairs = []
         
-        # For each threshold, compare all pairs of tools
-        for threshold, key in zip(thresholds, threshold_keys):
+        for threshold, key in zip(thresholds, keys):
             for i, tool1 in enumerate(tools):
                 for j, tool2 in enumerate(tools):
-                    if i < j:  # Only compare each pair once
-                        # Initialize contingency table
-                        contingency_table = np.zeros((2, 2), dtype=int)
-                        
-                        # For each sample, determine if each tool found the gene in the top-N
+                    if i < j:
+                        table = np.zeros((2, 2), dtype=int)
+                        count = 0
                         for sample_id, true_gene in ground_truth.items():
-                            # Check if both tools processed this sample
                             if sample_id in self.tool_data[tool1] and sample_id in self.tool_data[tool2]:
-                                # Did tool1 find the gene in top-N?
-                                ranked_genes1 = self.tool_data[tool1][sample_id]
-                                found1 = (true_gene in ranked_genes1 and 
-                                        ranked_genes1.index(true_gene) < threshold)
-                                
-                                # Did tool2 find the gene in top-N?
-                                ranked_genes2 = self.tool_data[tool2][sample_id]
-                                found2 = (true_gene in ranked_genes2 and 
-                                        ranked_genes2.index(true_gene) < threshold)
-                                
-                                # Update contingency table
-                                # [found1 & found2, found1 & !found2]
-                                # [!found1 & found2, !found1 & !found2]
-                                contingency_table[int(not found1), int(not found2)] += 1
+                                found1 = true_gene in self.tool_data[tool1][sample_id] and self.tool_data[tool1][sample_id].index(true_gene) < threshold
+                                found2 = true_gene in self.tool_data[tool2][sample_id] and self.tool_data[tool2][sample_id].index(true_gene) < threshold
+                                table[int(found1), int(found2)] += 1
+                                count += 1
                         
-                        # Perform Fisher's exact test
+                        if count < 10:
+                            print(f"Warning: Low sample count ({count}) for {tool1} vs {tool2} at top-{threshold}")
+                        if np.sum(table) == 0:
+                            continue
+                        
                         try:
-                            odds_ratio, p_value = fisher_exact(contingency_table)
-                            
-                            # Store results
-                            self.statistical_tests['fisher_exact'][key][(tool1, tool2)] = {
-                                'odds_ratio': odds_ratio,
-                                'p_value': p_value,
-                                'significant': p_value < 0.05,
-                                'contingency_table': contingency_table.tolist()
-                            }
-                            
-                            if p_value < 0.05:
-                                better_tool = tool1 if odds_ratio > 1 else tool2
-                                print(f"Significant difference for top-{threshold} between {tool1} and {tool2}: "
-                                    f"p-value={p_value:.4f}, {better_tool} performs better")
+                            odds_ratio, p_value = fisher_exact(table)
+                            all_p_values.append(p_value)
+                            all_pairs.append((tool1, tool2, threshold, key, table, odds_ratio))
                         except Exception as e:
-                            print(f"Error performing Fisher's exact test for {tool1} vs {tool2}: {e}")
+                            print(f"Fisher’s test error for {tool1} vs {tool2}: {e}")
         
-        # ================ VISUALIZE STATISTICAL TEST RESULTS ================
-        print("Generating statistical test visualizations...")
+        if all_p_values:
+            corrected_p = multipletests(all_p_values, method='bonferroni')[1]
+            for (tool1, tool2, threshold, key, table, odds_ratio), p in zip(all_pairs, corrected_p):
+                tool1_acc = self.metrics[tool1]['ranking'].get('top_rank_percentage' if threshold == 1 else f'top_{threshold}_percentage', 0)
+                tool2_acc = self.metrics[tool2]['ranking'].get('top_rank_percentage' if threshold == 1 else f'top_{threshold}_percentage', 0)
+                better = tool1 if tool1_acc > tool2_acc else tool2
+                self.statistical_tests['fisher_exact'][key][(tool1, tool2)] = {
+                    'odds_ratio': odds_ratio,
+                    'p_value': p,
+                    'significant': p < 0.05,
+                    'contingency_table': table.tolist(),
+                    'better_tool': better
+                }
+                if p < 0.05:
+                    print(f"Significant: top-{threshold}, {tool1} vs {tool2}, corrected p={p:.4f}, {better} better")
         
-        # 1. Visualize bootstrap confidence intervals
-        if self.statistical_tests.get('bootstrap_ci'):
-            plt.figure(figsize=(16, 10))
+        for threshold, key in zip(thresholds, keys):
+            plt.figure(figsize=(8, 6))
+            p_matrix = np.ones((len(tools), len(tools)))
+            for (tool1, tool2), data in self.statistical_tests['fisher_exact'][key].items():
+                i, j = tools.index(tool1), tools.index(tool2)
+                p_matrix[i, j] = p_matrix[j, i] = data['p_value']
             
-            # For each metric, plot the confidence intervals
-            metrics = ['top_rank_percentage', 'top_5_percentage', 'top_10_percentage']
-            metric_labels = ['Top-1 Accuracy', 'Top-5 Accuracy', 'Top-10 Accuracy']
-            
-            for i, (metric, label) in enumerate(zip(metrics, metric_labels)):
-                plt.subplot(1, 3, i+1)
-                
-                # Prepare data for plotting
-                tool_names = []
-                means = []
-                lower_bounds = []
-                upper_bounds = []
-                
-                for tool in tools:
-                    if tool in self.statistical_tests['bootstrap_ci'] and metric in self.statistical_tests['bootstrap_ci'][tool]:
-                        tool_names.append(tool)
-                        ci_data = self.statistical_tests['bootstrap_ci'][tool][metric]
-                        means.append(ci_data['mean'])
-                        lower_bounds.append(ci_data['lower'])
-                        upper_bounds.append(ci_data['upper'])
-                
-                # Calculate error bars
-                yerr = np.array([
-                    np.array(means) - np.array(lower_bounds),
-                    np.array(upper_bounds) - np.array(means)
-                ])
-                
-                # Plot with error bars
-                plt.errorbar(tool_names, means, yerr=yerr, fmt='o', capsize=5, markersize=10)
-                plt.title(f"{label} with 95% CI", fontsize=16)
-                plt.ylabel("Percentage (%)", fontsize=14)
-                plt.grid(True, linestyle='--', alpha=0.7)
-                plt.xticks(rotation=45, ha='right')
-            
+            mask = np.triu(np.ones_like(p_matrix, dtype=bool))
+            sns.heatmap(p_matrix, mask=mask, cmap='YlOrRd_r', vmin=0, vmax=0.1,
+                       annot=True, fmt='.3f', cbar_kws={'label': 'Corrected p-value'})
+            plt.title(f"Fisher’s Exact Test: Top-{threshold}")
+            plt.xticks(np.arange(len(tools)) + 0.5, tools, rotation=45)
+            plt.yticks(np.arange(len(tools)) + 0.5, tools)
             plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, 'bootstrap_ci.png'), dpi=1200, bbox_inches='tight')
-        
-        # 2. Visualize Nemenyi test results (if significant)
-        if self.statistical_tests.get('nemenyi_test') and 'tool_pairs' in self.statistical_tests['nemenyi_test']:
-            # If we have significant pairs, create a better visualization
-            tool_pairs = self.statistical_tests['nemenyi_test']['tool_pairs']
-            if tool_pairs:
-                plt.figure(figsize=(14, 10))
-                
-                # Create a cleaner, more visually appealing heatmap
-                n_tools = len(tools)
-                p_matrix = np.ones((n_tools, n_tools))
-                
-                for (tool1, tool2), data in tool_pairs.items():
-                    i = tools.index(tool1)
-                    j = tools.index(tool2)
-                    p_matrix[i, j] = data['p_value']
-                    p_matrix[j, i] = data['p_value']  # Make the matrix symmetric
-                
-                # Create a mask for the upper triangle to avoid redundancy
-                mask = np.triu(np.ones_like(p_matrix, dtype=bool))
-                
-                # Use a better colormap with proper normalization
-                cmap = plt.cm.YlOrRd_r
-                
-                # Create the heatmap with seaborn for better aesthetics
-                ax = plt.subplot(111)
-                im = sns.heatmap(p_matrix, mask=mask, cmap=cmap, 
-                                 vmin=0, vmax=0.1,
-                                 annot=True, fmt='.3f', linewidths=.5, 
-                                 cbar_kws={'label': 'p-value'}, 
-                                 square=True, ax=ax)
-                
-                # Highlight significant p-values with a border
-                for i in range(n_tools):
-                    for j in range(n_tools):
-                        if i < j and p_matrix[i, j] < 0.05:  # Only check lower triangle and significant values
-                            # Add a thicker border for significant comparisons
-                            rect = patches.Rectangle(
-                                (j, i), 1, 1, 
-                                linewidth=2, 
-                                edgecolor='black', 
-                                facecolor='none'
-                            )
-                            ax.add_patch(rect)
-                
-                # Customize plot
-                plt.title("Nemenyi Post-hoc Test: Pairwise Comparison p-values", fontsize=18, pad=20)
-                plt.xticks(np.arange(n_tools) + 0.5, tools, rotation=45, ha='right', fontsize=14)
-                plt.yticks(np.arange(n_tools) + 0.5, tools, fontsize=14)
-                
-                # Add an annotation explaining the significance
-                plt.figtext(0.5, 0.01, 
-                          "Black borders indicate statistically significant differences (p < 0.05)",
-                          ha="center", fontsize=12, 
-                          bbox={"facecolor":"white", "alpha":0.8, "pad":5, "edgecolor":"lightgray"})
-                
-                plt.tight_layout(rect=[0, 0.05, 1, 0.95])  # Make room for the annotation
-                
-                plt.savefig(os.path.join(output_dir, 'nemenyi_test.png'), dpi=1200, bbox_inches='tight')
-    
-    # =========== MODIFY THE GENERATE_REPORT METHOD TO ADD THIS SECTION ===========
-    def update_report_with_statistics(self, f):
+            plt.savefig(os.path.join(output_dir, f'fisher_exact_top_{threshold}.png'), dpi=1200)
+            plt.close()
+
+    def plot_friedman_ranks(self, output_dir='viz'):
         """
-        Update the report with statistical test results.
-        This should be called from generate_report before the Conclusion section.
-        
-        Parameters:
-        -----------
-        f : file object
-            The open file to write the report to
+        Plot Friedman test ranks with accurate critical distance
         """
-        # Statistical Tests
-        f.write("STATISTICAL TESTS\n")
-        f.write("----------------\n")
-    
-        # Friedman Test
-        if hasattr(self, 'statistical_tests') and self.statistical_tests.get('friedman_test'):
-            f.write("Friedman Test Results:\n")
-            friedman = self.statistical_tests['friedman_test']
-            f.write(f"  Statistic: {friedman.get('statistic', 'N/A'):.4f}\n")
-            f.write(f"  p-value: {friedman.get('p_value', 'N/A'):.4f}\n")
-            f.write(f"  Significant: {'Yes' if friedman.get('significant', False) else 'No'}\n\n")
-    
-        # Nemenyi Post-hoc Test
-        if hasattr(self, 'statistical_tests') and self.statistical_tests.get('nemenyi_test') and 'tool_pairs' in self.statistical_tests['nemenyi_test']:
-            f.write("Nemenyi Post-hoc Test Results:\n")
-            significant_pairs = [(t1, t2, data['p_value']) for (t1, t2), data in 
-                                self.statistical_tests['nemenyi_test']['tool_pairs'].items() 
-                                if data['significant']]
-            
-            if significant_pairs:
-                f.write("  Significant tool pairs:\n")
-                for t1, t2, p_val in sorted(significant_pairs, key=lambda x: x[2]):
-                    f.write(f"    {t1} vs {t2}: p-value={p_val:.4f}\n")
-            else:
-                f.write("  No significant differences found between tool pairs.\n")
-            f.write("\n")
-    
-        # Fisher's Exact Test
-        if hasattr(self, 'statistical_tests') and self.statistical_tests.get('fisher_exact'):
-            f.write("Fisher's Exact Test Results:\n")
-            
-            for threshold, label in [('top_1', 'Top-1'), ('top_5', 'Top-5'), ('top_10', 'Top-10')]:
-                if threshold in self.statistical_tests['fisher_exact']:
-                    f.write(f"  {label} Comparison:\n")
-                    
-                    significant_pairs = [(t1, t2, data['p_value'], data['odds_ratio']) 
-                                        for (t1, t2), data in self.statistical_tests['fisher_exact'][threshold].items() 
-                                        if data['significant']]
-                    
-                    if significant_pairs:
-                        f.write("    Significant tool pairs:\n")
-                        for t1, t2, p_val, odds in sorted(significant_pairs, key=lambda x: x[2]):
-                            better_tool = t1 if odds > 1 else t2
-                            f.write(f"      {t1} vs {t2}: p-value={p_val:.4f}, {better_tool} performs better\n")
-                    else:
-                        f.write("    No significant differences found.\n")
-            f.write("\n")
-    
-        # Bootstrap Confidence Intervals
-        if hasattr(self, 'statistical_tests') and self.statistical_tests.get('bootstrap_ci'):
-            f.write("Bootstrap 95% Confidence Intervals:\n")
-            f.write(f"{'Tool':<15}{'Top-1 (%)':<25}{'Top-5 (%)':<25}{'Top-10 (%)':<25}\n")
-            f.write("-" * 90 + "\n")
-            
-            for tool in self.tool_data.keys():
-                if tool in self.statistical_tests['bootstrap_ci']:
-                    ci_data = self.statistical_tests['bootstrap_ci'][tool]
-                    
-                    f.write(f"{tool:<15}")
-                    
-                    for metric in ['top_rank_percentage', 'top_5_percentage', 'top_10_percentage']:
-                        if metric in ci_data:
-                            data = ci_data[metric]
-                            f.write(f"{data['mean']:.2f} ({data['lower']:.2f}-{data['upper']:.2f}){' '*5}")
-                        else:
-                            f.write(f"N/A{' '*20}")
-                    
-                    f.write("\n")
-            
-            f.write("\n")
+        os.makedirs(output_dir, exist_ok=True)
+        tools = list(self.tool_data.keys())
+        ground_truth = {row['Sample id']: row['hgnc_gene'] for _, row in self.manual_data.iterrows()}
+        sample_ids = sorted(list(set(ground_truth.keys()) & set().union(*[set(self.tool_data[t].keys()) for t in tools])))
+        
+        rank_matrix = []
+        for sample_id in sample_ids:
+            sample_ranks = []
+            for tool in tools:
+                if sample_id in self.tool_data[tool]:
+                    ranked_genes = self.tool_data[tool][sample_id]
+                    rank = ranked_genes.index(ground_truth[sample_id]) + 1 if ground_truth[sample_id] in ranked_genes else len(ranked_genes) + 1
+                else:
+                    avg_rank = np.mean([len(self.tool_data[tool].get(sid, [])) + 1 
+                                      for sid in self.tool_data[tool].keys() 
+                                      if ground_truth.get(sid) not in self.tool_data[tool].get(sid, [])])
+                    rank = avg_rank if not np.isnan(avg_rank) else 1000
+                sample_ranks.append(rank)
+            rank_matrix.append(sample_ranks)
+        
+        rank_matrix = np.array(rank_matrix)
+        avg_ranks = np.mean(rank_matrix, axis=0)
+        
+        k, N = len(tools), len(rank_matrix)
+        q_alpha = {2: 1.960, 3: 2.343, 4: 2.569, 5: 2.728, 6: 2.850}.get(k, 2.850)
+        critical_distance = q_alpha * np.sqrt(k * (k + 1) / (12 * N))
+        
+        plt.figure(figsize=(10, 6))
+        sorted_ranks = sorted(zip(tools, avg_ranks), key=lambda x: x[1])
+        tools, ranks = zip(*sorted_ranks)
+        plt.barh(tools, ranks, color='skyblue')
+        plt.axvline(min(ranks) + critical_distance, color='red', linestyle='--')
+        plt.text(0.7, 0.2, f'CD={critical_distance:.2f}', color='red', transform=plt.gcf().transFigure)
+        plt.xlabel('Average Rank')
+        plt.title('Friedman Test: Average Ranks')
+        plt.grid(axis='x', linestyle='--', alpha=0.7)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'friedman_ranks.png'), dpi=1200)
+        plt.close()
+        print(f"Friedman ranks plot saved to {output_dir}/friedman_ranks.png")
+
     def generate_visualizations(self, output_dir='viz'):
         """
         Generate visualizations for the results.
@@ -1185,101 +875,61 @@ class VariantToolBenchmarker:
         """
         print("Generating visualizations...")
         
-        # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
         
-        # Get list of tools
         tools = list(self.tool_data.keys())
         
-        # Get ground truth genes for each sample
-        ground_truth = {}
-        for _, row in self.manual_data.iterrows():
-            sample_id = row['Sample id']
-            gene = row['hgnc_gene']
-            ground_truth[sample_id] = gene
+        ground_truth = {row['Sample id']: row['hgnc_gene'] for _, row in self.manual_data.iterrows()}
         
         # 1. Bar chart: Number of correct matches per tool
         plt.figure(figsize=(14, 8))
-        
-        # Count correct matches for each tool
         correct_matches = []
         for tool in tools:
-            matches = 0
-            for sample_id, true_gene in ground_truth.items():
-                if sample_id in self.tool_data[tool]:
-                    ranked_genes = self.tool_data[tool][sample_id]
-                    if true_gene in ranked_genes:
-                        matches += 1
+            matches = sum(1 for sample_id, true_gene in ground_truth.items() if sample_id in self.tool_data[tool] and true_gene in self.tool_data[tool][sample_id])
             correct_matches.append(matches)
-        
         plt.bar(tools, correct_matches, color='#4CAF50')
         plt.title('Retention Rate per Tool (%)', fontsize=16)
         plt.xlabel('Tool', fontsize=14)
         plt.ylabel('Number of Correct Matches', fontsize=14)
         plt.grid(True, linestyle='--', alpha=0.7, axis='y')
         plt.tight_layout()
-        
-        # Save plot
         plt.savefig(os.path.join(output_dir, 'gene_match_accuracy.png'), dpi=1200, bbox_inches='tight')
+        plt.close()
         
         # 2. Grouped bar chart: Ranking accuracy comparison
         plt.figure(figsize=(16, 10))
-        
-        # Define thresholds and colors
         thresholds = [1, 5, 10, 20, 50]
         colors = ['#66c2a5', '#fc8d62', '#8da0cb', '#e78ac3', '#a6d854']
-        
-        # Create data arrays
         accuracy_data = np.zeros((len(tools), len(thresholds)))
-        
         for i, tool in enumerate(tools):
             for j, threshold in enumerate(thresholds):
                 metric_name = f'top_rank_percentage' if threshold == 1 else f'top_{threshold}_percentage'
                 accuracy_data[i, j] = self.metrics[tool]['ranking'].get(metric_name, 0)
-        
-        # Plot grouped bars
         width = 0.15
         x = np.arange(len(tools))
-        
         for i in range(len(thresholds)):
-            plt.bar(x + (i - 2) * width, accuracy_data[:, i], width, 
-                    label=f'Top-{thresholds[i]} Accuracy (%)', color=colors[i])
-        
+            plt.bar(x + (i - 2) * width, accuracy_data[:, i], width, label=f'Top-{thresholds[i]} Accuracy (%)', color=colors[i])
         plt.title('Ranking Accuracy Comparison Across Tools', fontsize=20)
         plt.xlabel('Tool', fontsize=14)
         plt.ylabel('Accuracy (%)', fontsize=16)
         plt.xticks(x, tools)
         plt.legend(loc='upper center', bbox_to_anchor=(0.5, 1.25), ncol=5, fontsize=16)
-        plt.subplots_adjust(top=0.75)  # Make more room at top
+        plt.subplots_adjust(top=0.75)
         plt.grid(True, linestyle='--', alpha=0.3)
         plt.tight_layout()
-        
-        # Save plot
         plt.savefig(os.path.join(output_dir, 'ranking_accuracy_comparison.png'), dpi=1200, bbox_inches='tight')
+        plt.close()
         
         # 3. Stacked bar: Distribution of variant ranks
         plt.figure(figsize=(14, 8))
-        
-        # Calculate distributions for each tool
         rank_distributions = []
         categories = ['1st', '2nd-5th', '6th-10th', '>10th', 'FONP']
         colors = ['#4daf4a', '#ff7f00', '#377eb8', '#984ea3', '#e41a1c']
-        
         for tool in tools:
-            # Initialize counts
-            counts = {
-                '1st': 0,
-                '2nd-5th': 0,
-                '6th-10th': 0,
-                '>10th': 0,
-                'FONP': 0  # Found or Not Present
-            }
-            
-            # Count occurrences
+            counts = {'1st': 0, '2nd-5th': 0, '6th-10th': 0, '>10th': 0, 'FONP': 0}
             for sample_id, true_gene in ground_truth.items():
                 if sample_id in self.tool_data[tool]:
                     ranked_genes = self.tool_data[tool][sample_id]
-                    
                     if true_gene in ranked_genes:
                         rank = ranked_genes.index(true_gene) + 1
                         if rank == 1:
@@ -1294,27 +944,17 @@ class VariantToolBenchmarker:
                         counts['FONP'] += 1
                 else:
                     counts['FONP'] += 1
-            
-            # Convert to percentages
             total = sum(counts.values())
             percentages = {k: (v / total * 100) for k, v in counts.items()}
             rank_distributions.append([percentages[cat] for cat in categories])
-        
-        # Plot stacked bars
         data = np.array(rank_distributions).T
         bottoms = np.zeros(len(tools))
-        
         for i, (cat, color) in enumerate(zip(categories, colors)):
             plt.bar(tools, data[i], bottom=bottoms, label=cat, color=color)
-            
-            # Add percentage labels in the middle of each segment
             for j, tool in enumerate(tools):
-                if data[i][j] > 5:  # Only show labels for segments that are large enough
-                    plt.text(j, bottoms[j] + data[i][j]/2, f"{data[i][j]:.1f}%", 
-                             ha='center', va='center', color='black', fontsize=16,)
-            
+                if data[i][j] > 5:
+                    plt.text(j, bottoms[j] + data[i][j]/2, f"{data[i][j]:.1f}%", ha='center', va='center', color='black', fontsize=16)
             bottoms += data[i]
-        
         plt.title('Overall Distribution of Variant Ranks Across Prioritization Tools', fontsize=16)
         plt.xlabel('Variant prioritization software', fontsize=14)
         plt.ylabel('Disease-causing variants, %', fontsize=14)
@@ -1322,101 +962,64 @@ class VariantToolBenchmarker:
         plt.ylim(0, 100)
         plt.grid(True, linestyle='--', alpha=0.3, axis='y')
         plt.tight_layout()
-        
-        # Save plot
         plt.savefig(os.path.join(output_dir, 'rank_distribution.png'), dpi=1200, bbox_inches='tight')
-    
+        plt.close()
         
         # 4. Radar chart: Overall tool performance metrics
         plt.figure(figsize=(12, 10))
-        
-        # Define metrics to include
-        metrics = ['Top-1 Accuracy (%)', 'Top-5 Accuracy (%)', 'Top-10 Accuracy (%)', 'Accuracy (%)']
-        
-        # Number of metrics
-        N = len(metrics)
-        
-        # Create angles for each metric
-        angles = np.linspace(0, 2*np.pi, N, endpoint=False).tolist()
-        
-        # Make the plot circular
+        metrics_radar = ['Top-1 Accuracy (%)', 'Top-5 Accuracy (%)', 'Top-10 Accuracy (%)', 'Accuracy (%)']
+        N = len(metrics_radar)
+        angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
         angles += angles[:1]
-        
-        # Create subplot with polar projection
         ax = plt.subplot(111, polar=True)
-        
-        # Set the first axis to be on top
         ax.set_theta_offset(np.pi / 2)
         ax.set_theta_direction(-1)
-        
-        # Draw one axis per variable and add labels
-        plt.xticks(angles[:-1], metrics)
-        
-        # Set limits for each metric (assumed to be percentages)
+        plt.xticks(angles[:-1], metrics_radar)
         ax.set_rlabel_position(0)
         plt.yticks([20, 40, 60, 80, 100], ["20%", "40%", "60%", "80%", "100%"], color="grey", size=8)
         plt.ylim(0, 100)
-        
-        # Plot data for each tool
-        # Define colors for tools
         tool_colors = {
-        'franklin': '#1f77b4',  # blue
-        'Franklin': '#1f77b4',  # blue
-        'genebe': '#2ca02c',    # green
-        'Genebe': '#2ca02c',    # green
-        'intervar': '#d62728',  # red
-        'Intervar': '#d62728',  # red
-        'tapes': '#9467bd',     # purple
-        'TAPES': '#9467bd',     # purple
-        'lirical': '#ff7f0e',   # orange
-        'LIRICAL': '#ff7f0e',   # orange
-        'cpsr': '#8c564b',      # brown
-        'CPSR': '#8c564b'       # brown
-    }
-        
+            'franklin': '#1f77b4',
+            'Franklin': '#1f77b4',
+            'genebe': '#2ca02c',
+            'Genebe': '#2ca02c',
+            'intervar': '#d62728',
+            'Intervar': '#d62728',
+            'tapes': '#9467bd',
+            'TAPES': '#9467bd',
+            'lirical': '#ff7f0e',
+            'LIRICAL': '#ff7f0e',
+            'cpsr': '#8c564b',
+            'CPSR': '#8c564b'
+        }
         for tool in tools:
-            # Get data for this tool
             values = [
                 self.metrics[tool]['ranking'].get('top_rank_percentage', 0),
                 self.metrics[tool]['ranking'].get('top_5_percentage', 0),
                 self.metrics[tool]['ranking'].get('top_10_percentage', 0),
-                self.metrics[tool]['accuracy'].get('recall', 0) * 100  # Convert to percentage
+                self.metrics[tool]['accuracy'].get('recall', 0) * 100
             ]
-            
-            # Make the plot circular by adding the first value at the end
             values += values[:1]
-            
-            # Plot values
-            ax.plot(angles, values, linewidth=2, linestyle='solid', label=tool, 
-                    color=tool_colors.get(tool, None))
+            ax.plot(angles, values, linewidth=2, linestyle='solid', label=tool, color=tool_colors.get(tool, None))
             ax.fill(angles, values, alpha=0.1, color=tool_colors.get(tool, None))
-        
-
-        # Add legend
         plt.legend(loc='center left', bbox_to_anchor=(1.3, 0.5))
-
         if 'cpsr' in tools:
             plt.title('Overall Tool Performance Metrics (Including CPSR)', size=16)
         else:
             plt.title('Overall Tool Performance Metrics (Excluding CPSR)', size=16)
         plt.tight_layout()
-        
-        # Save plot
         plt.savefig(os.path.join(output_dir, 'radar_performance.png'), dpi=1200, bbox_inches='tight')
+        plt.close()
         
         # 5. Top-N percentage comparison
         plt.figure(figsize=(14, 8))
-        
         top_n_values = [1, 5, 10, 20, 30, 40, 50]
-        
         for tool in tools:
             values = []
             for n in top_n_values:
                 metric_name = f'top_rank_percentage' if n == 1 else f'top_{n}_percentage'
                 values.append(self.metrics[tool]['ranking'].get(metric_name, 0))
-            
             plt.plot(top_n_values, values, marker='o', linewidth=2, label=tool)
-        
         plt.xlabel('Top-N', fontsize=12)
         plt.ylabel('Percentage of cases (%)', fontsize=12)
         plt.title('Top-N Percentage Comparison', fontsize=14)
@@ -1424,23 +1027,17 @@ class VariantToolBenchmarker:
         plt.grid(True, linestyle='--', alpha=0.7)
         plt.legend(loc='center left', bbox_to_anchor=(1.0, 0.5))
         plt.tight_layout()
-        
-        # Save plot
         plt.savefig(os.path.join(output_dir, 'top_n_comparison.png'), dpi=1200, bbox_inches='tight')
+        plt.close()
         
-    
         # 6. Mean and median ranks
         plt.figure(figsize=(10, 6))
-        
         mean_ranks = [self.metrics[tool]['ranking'].get('mean_rank', 0) for tool in tools]
         median_ranks = [self.metrics[tool]['ranking'].get('median_rank', 0) for tool in tools]
-        
         x = np.arange(len(tools))
         width = 0.35
-        
         plt.bar(x - width/2, mean_ranks, width, label='Mean Rank')
         plt.bar(x + width/2, median_ranks, width, label='Median Rank')
-        
         plt.xlabel('Tool', fontsize=12)
         plt.ylabel('Rank', fontsize=12)
         plt.title('Mean and Median Ranks by Tool', fontsize=14)
@@ -1448,22 +1045,15 @@ class VariantToolBenchmarker:
         plt.legend(loc='center left', bbox_to_anchor=(1.0, 0.5), fontsize=14)
         plt.grid(True, axis='y', linestyle='--', alpha=0.7)
         plt.tight_layout()
-        
-        # Save plot
         plt.savefig(os.path.join(output_dir, 'rank_comparison.png'), dpi=1200, bbox_inches='tight')
+        plt.close()
         
         # 7. Precision at different thresholds
         plt.figure(figsize=(14, 8))
-        
         thresholds = [1, 5, 10, 20, 50]
-        
         for tool in tools:
-            values = []
-            for threshold in thresholds:
-                values.append(self.metrics[tool]['accuracy'].get(f'precision_at_{threshold}', 0))
-            
+            values = [self.metrics[tool]['accuracy'].get(f'precision_at_{threshold}', 0) for threshold in thresholds]
             plt.plot(thresholds, values, marker='o', linewidth=2, label=tool)
-        
         plt.xlabel('Rank Threshold', fontsize=12)
         plt.ylabel('Precision', fontsize=12)
         plt.title('Precision at Different Rank Thresholds', fontsize=14)
@@ -1471,106 +1061,148 @@ class VariantToolBenchmarker:
         plt.grid(True, linestyle='--', alpha=0.7)
         plt.legend(loc='center left', bbox_to_anchor=(1.0, 0.5))
         plt.tight_layout()
-        
-        # Save plot
         plt.savefig(os.path.join(output_dir, 'precision_comparison.png'), dpi=1200, bbox_inches='tight')
-                
-
+        plt.close()
         
         # 8. F1 score and recall comparison
         plt.figure(figsize=(12, 6))
-        
         f1_scores = [self.metrics[tool]['accuracy'].get('f1_score', 0) for tool in tools]
         recall_values = [self.metrics[tool]['accuracy'].get('recall', 0) for tool in tools]
-        
         x = np.arange(len(tools))
         width = 0.35
-        
         plt.bar(x - width/2, f1_scores, width, label='F1 Score')
         plt.bar(x + width/2, recall_values, width, label='Recall')
-        
         plt.xlabel('Tool', fontsize=12)
         plt.ylabel('Score', fontsize=12)
         plt.title('F1 Score and Recall Comparison', fontsize=14)
         plt.xticks(x, tools)
         plt.legend(loc='center left', bbox_to_anchor=(1.0, 0.5))
         plt.grid(True, axis='y', linestyle='--', alpha=0.7)
-        
-        # Save plot
+        plt.tight_layout()
         plt.savefig(os.path.join(output_dir, 'f1_recall_comparison.png'), dpi=1200, bbox_inches='tight')
+        plt.close()
         
         # 9. Generate CDF visualization
         plt.figure(figsize=(14, 8))
-        
-        # Plot CDF for each tool
         for tool in tools:
             ranks = []
-            
             for sample_id, true_gene in ground_truth.items():
                 if sample_id in self.tool_data[tool]:
                     ranked_genes = self.tool_data[tool][sample_id]
-                    
                     if true_gene in ranked_genes:
-                        # Get rank of true gene (0-indexed, so add 1)
                         rank = ranked_genes.index(true_gene) + 1
                     else:
-                        # Gene not found, assign a large rank
                         rank = len(ranked_genes) + 1
-                    
                     ranks.append(rank)
-            
             if ranks:
-                # Calculate empirical CDF
                 x = np.sort(ranks)
                 y = np.arange(1, len(x) + 1) / len(x)
-                
-                # Plot CDF
                 plt.step(x, y, label=tool, linewidth=2)
-        
         plt.xlabel('Rank', fontsize=12)
         plt.ylabel('Cumulative Probability', fontsize=12)
         plt.title('Cumulative Distribution Function of Ranks', fontsize=14)
         plt.grid(True, linestyle='--', alpha=0.7)
         plt.legend(loc='center left', bbox_to_anchor=(1.0, 0.5))
         plt.tight_layout()
-        
-        # Save plot
         plt.savefig(os.path.join(output_dir, 'rank_cdf.png'), dpi=1200, bbox_inches='tight')
+        plt.close()
         
         # 10. Venn diagram for tool overlap (for 2 or 3 tools)
         if len(tools) >= 2:
             plt.figure(figsize=(10, 8))
-            
-            # Get successful identifications for each tool (using top-10)
             tool_successes = {}
-            
             for tool in tools:
                 successful_samples = set()
-                
                 for sample_id, true_gene in ground_truth.items():
                     if sample_id in self.tool_data[tool]:
                         ranked_genes = self.tool_data[tool][sample_id]
                         top_n = min(10, len(ranked_genes))
-                        
                         if true_gene in ranked_genes[:top_n]:
                             successful_samples.add(sample_id)
-                
                 tool_successes[tool] = successful_samples
-            
-            # Create Venn diagram for 2 or 3 tools
             if len(tools) == 2:
-                venn2([tool_successes[tools[0]], tool_successes[tools[1]]], 
-                      set_labels=(tools[0], tools[1]))
+                venn2([tool_successes[tools[0]], tool_successes[tools[1]]], set_labels=(tools[0], tools[1]))
                 plt.title('Overlap of Successful Identifications (Top-10)', fontsize=14)
             elif len(tools) == 3:
-                venn3([tool_successes[tools[0]], tool_successes[tools[1]], tool_successes[tools[2]]], 
-                      set_labels=(tools[0], tools[1], tools[2]))
+                venn3([tool_successes[tools[0]], tool_successes[tools[1]], tool_successes[tools[2]]], set_labels=(tools[0], tools[1], tools[2]))
                 plt.title('Overlap of Successful Identifications (Top-10)', fontsize=14)
-            
-            # Save plot
             plt.savefig(os.path.join(output_dir, 'tool_overlap_venn.png'), dpi=1200)
+            plt.close()
         
         print(f"Visualizations saved to {output_dir} directory.")
+
+    def update_report_with_statistics(self, f):
+        """
+        Update the report with statistical test results, including bootstrap CIs for top-1, top-5, top-10.
+        
+        Parameters:
+        -----------
+        f : file object
+            The open file to write the report to
+        """
+        f.write("STATISTICAL TESTS\n")
+        f.write("----------------\n")
+    
+        # Friedman Test
+        if 'friedman_test' in self.statistical_tests:
+            f.write("Friedman Test Results (Ranking Performance):\n")
+            friedman = self.statistical_tests['friedman_test']
+            f.write(f"  Statistic: {friedman.get('statistic', 'N/A'):.4f}\n")
+            f.write(f"  p-value: {friedman.get('p_value', 'N/A'):.4f}\n")
+            f.write(f"  Significant: {'Yes' if friedman.get('significant', False) else 'No'}\n\n")
+    
+        # Nemenyi Post-hoc Test
+        if 'nemenyi_test' in self.statistical_tests and 'tool_pairs' in self.statistical_tests['nemenyi_test']:
+            f.write("Nemenyi Post-hoc Test Results (Ranking Performance):\n")
+            significant_pairs = [(t1, t2, data['p_value']) for (t1, t2), data in 
+                                self.statistical_tests['nemenyi_test']['tool_pairs'].items() 
+                                if data['significant']]
+            if significant_pairs:
+                f.write("  Significant tool pairs:\n")
+                for t1, t2, p_val in sorted(significant_pairs, key=lambda x: x[2]):
+                    tool1_acc = self.metrics[t1]['ranking'].get('top_rank_percentage', 0)
+                    tool2_acc = self.metrics[t2]['ranking'].get('top_rank_percentage', 0)
+                    better_tool = t1 if tool1_acc > tool2_acc else t2
+                    f.write(f"    {t1} vs {t2}: p-value={p_val:.4f}, {better_tool} performs better\n")
+            else:
+                f.write("  No significant differences found between tool pairs.\n")
+            f.write("\n")
+    
+        # Fisher's Exact Test
+        if 'fisher_exact' in self.statistical_tests:
+            f.write("Fisher's Exact Test Results:\n")
+            for threshold, label in [('top_1', 'Top-1'), ('top_5', 'Top-5'), ('top_10', 'Top-10')]:
+                if threshold in self.statistical_tests['fisher_exact']:
+                    f.write(f"  {label} Comparison:\n")
+                    significant_pairs = [(t1, t2, data['p_value'], data['odds_ratio']) 
+                                        for (t1, t2), data in self.statistical_tests['fisher_exact'][threshold].items() 
+                                        if data['significant']]
+                    if significant_pairs:
+                        f.write("    Significant tool pairs:\n")
+                        for t1, t2, p_val, odds in sorted(significant_pairs, key=lambda x: x[2]):
+                            better_tool = t1 if odds > 1 else t2
+                            f.write(f"      {t1} vs {t2}: p-value={p_val:.4f}, {better_tool} performs better\n")
+                    else:
+                        f.write("    No significant differences found.\n")
+            f.write("\n")
+    
+        # Bootstrap Confidence Intervals
+        if 'bootstrap_ci' in self.statistical_tests:
+            f.write("Bootstrap 95% Confidence Intervals:\n")
+            f.write(f"{'Tool':<15}{'Top-1 (%)':<25}{'Top-5 (%)':<25}{'Top-10 (%)':<25}\n")
+            f.write("-" * 100 + "\n")
+            for tool in sorted(self.tool_data.keys()):
+                if tool in self.statistical_tests['bootstrap_ci']:
+                    ci_data = self.statistical_tests['bootstrap_ci'][tool]
+                    f.write(f"{tool:<15}")
+                    for metric in ['top_rank_percentage', 'top_5_percentage', 'top_10_percentage']:
+                        if metric in ci_data:
+                            data = ci_data[metric]
+                            f.write(f"{data['mean']:.2f} ({data['lower']:.2f}-{data['upper']:.2f}){' '*(25-13)}")
+                        else:
+                            f.write(f"N/A{' '*(25-13)}")
+                    f.write("\n")
+            f.write("\n")
 
     def generate_report(self, output_file='benchmark_report.txt'):
         """
@@ -1588,168 +1220,114 @@ class VariantToolBenchmarker:
             f.write("   VARIANT CLASSIFICATION TOOLS BENCHMARKING REPORT     \n")
             f.write("========================================================\n\n")
             
-            # 1. Summary of tools analyzed
+            # Summary of tools analyzed
             f.write("TOOLS ANALYZED\n")
             f.write("-------------\n")
             for tool in self.tool_data.keys():
                 f.write(f"- {tool}\n")
             f.write("\n")
             
-            # 2. Ranking Metrics
+            # Ranking Metrics
             f.write("RANKING METRICS\n")
             f.write("--------------\n")
-            
-            # Create a table header
             metrics = ['Top-Rank %', 'Top-5 %', 'Top-10 %', 'Top-20 %', 'Mean Rank', 'Median Rank']
             f.write(f"{'Tool':<15}")
             for metric in metrics:
                 f.write(f"{metric:<15}")
             f.write("\n")
-            
             f.write("-" * (15 * (len(metrics) + 1)) + "\n")
-            
-            # Write data for each tool
             for tool in self.tool_data.keys():
                 f.write(f"{tool:<15}")
-                
-                # Top-rank percentage
                 value = self.metrics[tool]['ranking'].get('top_rank_percentage', np.nan)
                 f.write(f"{value:,.2f}%{' ' * 8}")
-                
-                # Top-5 percentage
                 value = self.metrics[tool]['ranking'].get('top_5_percentage', np.nan)
                 f.write(f"{value:,.2f}%{' ' * 8}")
-                
-                # Top-10 percentage
                 value = self.metrics[tool]['ranking'].get('top_10_percentage', np.nan)
                 f.write(f"{value:,.2f}%{' ' * 8}")
-                
-                # Top-20 percentage
                 value = self.metrics[tool]['ranking'].get('top_20_percentage', np.nan)
                 f.write(f"{value:,.2f}%{' ' * 8}")
-                
-                # Mean rank
                 value = self.metrics[tool]['ranking'].get('mean_rank', np.nan)
                 f.write(f"{value:,.2f}{' ' * 10}")
-                
-                # Median rank
                 value = self.metrics[tool]['ranking'].get('median_rank', np.nan)
                 f.write(f"{value:,.2f}{' ' * 10}")
-                
                 f.write("\n")
-            
             f.write("\n")
             
-            # 3. Filtering Performance
+            # Filtering Performance
             f.write("FILTERING PERFORMANCE\n")
             f.write("--------------------\n")
-            
-            # Create a table header
             metrics = ['Filtered-Out Rate', 'Retention Rate']
             f.write(f"{'Tool':<15}")
             for metric in metrics:
                 f.write(f"{metric:<20}")
             f.write("\n")
-            
             f.write("-" * (15 + 20 * len(metrics)) + "\n")
-            
-            # Write data for each tool
             for tool in self.tool_data.keys():
                 f.write(f"{tool:<15}")
-                
-                # Filtered-out rate
                 value = self.metrics[tool]['filtering'].get('filtered_out_rate', np.nan)
                 f.write(f"{value:,.2f}%{' ' * 13}")
-                
-                # Retention rate
                 value = self.metrics[tool]['filtering'].get('retention_rate', np.nan)
                 f.write(f"{value:,.2f}%{' ' * 13}")
-                
                 f.write("\n")
-            
             f.write("\n")
             
-            # 4. Accuracy Metrics
+            # Accuracy Metrics
             f.write("ACCURACY METRICS\n")
             f.write("---------------\n")
-            
-            # Create a table header
             metrics = ['Precision@1', 'Precision@10', 'Recall', 'F1 Score']
             f.write(f"{'Tool':<15}")
             for metric in metrics:
                 f.write(f"{metric:<15}")
             f.write("\n")
-            
             f.write("-" * (15 * (len(metrics) + 1)) + "\n")
-            
-            # Write data for each tool
             for tool in self.tool_data.keys():
                 f.write(f"{tool:<15}")
-                
-                # Precision at 1
                 value = self.metrics[tool]['accuracy'].get('precision_at_1', np.nan)
                 f.write(f"{value:,.4f}{' ' * 8}")
-                
-                # Precision at 10
                 value = self.metrics[tool]['accuracy'].get('precision_at_10', np.nan)
                 f.write(f"{value:,.4f}{' ' * 8}")
-                
-                # Recall
                 value = self.metrics[tool]['accuracy'].get('recall', np.nan)
                 f.write(f"{value:,.4f}{' ' * 8}")
-                
-                # F1 score
                 value = self.metrics[tool]['accuracy'].get('f1_score', np.nan)
                 f.write(f"{value:,.4f}{' ' * 8}")
-                
                 f.write("\n")
-            
             f.write("\n")
+            
+            # Add statistical tests
             self.update_report_with_statistics(f)
-            # 5. Conclusion
+            
+            # Conclusion
             f.write("CONCLUSION\n")
             f.write("----------\n")
             f.write("Based on the benchmarking metrics, the tools can be ranked as follows:\n\n")
-            
-            # Rank tools based on top-10 percentage
-            tool_ranking = {}
-            for tool in self.tool_data.keys():
-                top_10 = self.metrics[tool]['ranking'].get('top_10_percentage', 0)
-                tool_ranking[tool] = top_10
-            
-            # Sort tools by top-10 percentage
+            tool_ranking = {tool: self.metrics[tool]['ranking'].get('top_10_percentage', 0) for tool in self.tool_data.keys()}
             sorted_tools = sorted(tool_ranking.items(), key=lambda x: x[1], reverse=True)
-            
             for i, (tool, value) in enumerate(sorted_tools):
                 f.write(f"{i+1}. {tool} (Top-10: {value:.2f}%)\n")
-            
             f.write("\nRecommendations:\n")
             if 'cpsr' in self.tool_data and 'LIRICAL' in self.tool_data:
-                f.write("1. For cancer samples, CPSR should be the first-line tool, with Lirical as complement\n")
+                f.write("1. For cancer samples, CPSR should be the first-line tool, with LIRICAL as complement\n")
                 f.write("2. For non-cancer samples, LIRICAL should be the primary tool\n")
             elif 'LIRICAL' in self.tool_data:
                 f.write("1. LIRICAL shows the strongest overall performance across metrics\n")
-            
             f.write("3. Consider using multiple tools in combination to maximize variant identification\n")
             f.write("4. For specific applications, consider the strengths of each tool highlighted in this report\n")
             f.write("5. Franklin performs well at finding pathogenic variants but may need alternative ranking metrics\n")
         
         print(f"Report generated and saved to {output_file}")
+
 def main():
     """Main function to run the benchmark analysis."""
-    # Define file paths with updated location
     base_dir = r"C:\Users\z5537966\OneDrive - UNSW\Desktop\new data\test\common_samples_only\Franklin\manual\final_combined_data"
     unified_acmg_path = os.path.join(base_dir, "ACMG_163.csv")
     lirical_folder_path = base_dir
     manual_annotations_path = os.path.join(base_dir, "hgnc_standardized_matched_manual_annotations _163.xlsx")
     
-    # Define output paths within the same directory
     viz_output_dir = os.path.join(base_dir, "benchmark_visualizations")
     report_output_file = os.path.join(base_dir, "benchmark_report.txt")
     cancer_viz_output_dir = os.path.join(base_dir, "cancer_benchmark_visualizations")
     cancer_report_output_file = os.path.join(base_dir, "cancer_benchmark_report.txt")
     
-    # Create benchmarker instance for all samples (excluding cpsr and charger)
     print("\n===== BENCHMARKING ALL SAMPLES (EXCLUDING CPSR AND CHARGER) =====")
     benchmarker = VariantToolBenchmarker(
         unified_acmg_path,
@@ -1757,40 +1335,23 @@ def main():
         manual_annotations_path,
         exclude_tools=['charger', 'CPSR']
     )
-    
-    # Load and preprocess data
     benchmarker.load_data()
-    
-    # Calculate performance metrics
     benchmarker.calculate_metrics()
-    
-    # Perform statistical tests
     benchmarker.perform_and_visualize_statistical_tests(output_dir=viz_output_dir)
-    
-    # Generate visualizations
+    benchmarker.plot_friedman_ranks(output_dir=viz_output_dir)
     benchmarker.generate_visualizations(output_dir=viz_output_dir)
-    
-    # Generate report
     benchmarker.generate_report(output_file=report_output_file)
+    print(f"\nResults saved to:\nVisualizations: {viz_output_dir}\nReport: {report_output_file}")
     
-    print(f"\nResults saved to:")
-    print(f"Visualizations: {viz_output_dir}")
-    print(f"Report: {report_output_file}")
-    
-    # Now run cancer-specific benchmarking including CPSR
     print("\n\n===== BENCHMARKING CANCER SAMPLES (INCLUDING CPSR) =====")
-    
-    # Define cancer samples
     cancer_samples = [
         'PGERA2440', 'PGERA1112', 'PGERA2125', 'PGERA1788', 'G5500', 'G5620', 
-        'G2001380',  'G2101361', 'G1800091', 'G1800228', 
+        'G2001380', 'G2101361', 'G1800091', 'G1800228', 
         'G2200657', 'G1900091', 'G2000091', 'G1900228', 'G2000228', 'G2101380', 
         'G2201380', 'G2201360', 'G2301360', 'G2300657', 'G2400657', 'G6500', 
         'G7500', 'G7620', 'PGERA2112', 'PGERA3112', 'PGERA2788', 
         'PGERA3788', 'PGERA3125', 'PGERA4125', 'PGERA3440', 'PGERA4440'
     ]
-    
-    # Create cancer benchmarker instance
     cancer_benchmarker = VariantToolBenchmarker(
         unified_acmg_path,
         lirical_folder_path,
@@ -1798,24 +1359,13 @@ def main():
         exclude_tools=['charger'], 
         sample_subset=cancer_samples
     )
-    
-    # Load and preprocess data
     cancer_benchmarker.load_data()
-    
-    # Calculate performance metrics
     cancer_benchmarker.calculate_metrics()
-    
-    # Perform statistical tests
     cancer_benchmarker.perform_and_visualize_statistical_tests(output_dir=cancer_viz_output_dir)
-    
-    # Generate visualizations
+    cancer_benchmarker.plot_friedman_ranks(output_dir=cancer_viz_output_dir)
     cancer_benchmarker.generate_visualizations(output_dir=cancer_viz_output_dir)
-    
-    # Generate report
     cancer_benchmarker.generate_report(output_file=cancer_report_output_file)
-    
-    print(f"\nCancer-specific results saved to:")
-    print(f"Visualizations: {cancer_viz_output_dir}")
-    print(f"Report: {cancer_report_output_file}")
+    print(f"\nCancer-specific results saved to:\nVisualizations: {cancer_viz_output_dir}\nReport: {cancer_report_output_file}")
+
 if __name__ == "__main__":
     main()
